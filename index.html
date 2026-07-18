@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0f0f11">
 <title>Maktabah</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=Noto+Naskh+Arabic:wght@400;700&display=swap">
 <link rel="stylesheet" href="styles.css">
 <link rel="manifest" href="manifest.json">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
@@ -12,6 +15,7 @@
 <body>
 
 <header class="topbar">
+  <span class="wordmark">Maktabah</span>
   <h1 id="topbar-title">Vault</h1>
 </header>
 
@@ -56,6 +60,15 @@
     <div id="upload-progress" class="progress hidden"></div>
     <ul id="pdf-list" class="card-list"></ul>
     <p id="pdf-empty" class="empty">No books uploaded yet.</p>
+
+    <h2 class="section-h">Backup</h2>
+    <div class="row">
+      <button id="btn-export" class="btn">Export backup</button>
+      <label class="btn" style="text-align:center">Restore backup
+        <input id="import-input" type="file" accept=".mktbh,.json,application/json" hidden>
+      </label>
+    </div>
+    <p id="backup-status" class="backup-status">Everything lives only on this device. Export a backup file regularly and keep it in your Drive or elsewhere safe.</p>
   </div>
 </main>
 
@@ -128,6 +141,18 @@
     </span>
   </div>
   <div class="viewer-scroll"><canvas id="viewer-canvas"></canvas></div>
+</div>
+
+<!-- ============ TOAST & DIALOG ============ -->
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+<div id="dialog" class="dialog-overlay hidden" role="alertdialog" aria-modal="true">
+  <div class="dialog">
+    <p id="dialog-msg"></p>
+    <div class="dialog-actions">
+      <button id="dialog-cancel" class="btn">Cancel</button>
+      <button id="dialog-ok" class="btn danger">Confirm</button>
+    </div>
+  </div>
 </div>
 
 <!-- ============ TAB BAR ============ -->

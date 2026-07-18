@@ -39,6 +39,31 @@ const get = (store, key) => tx(store, 'readonly', (s) => s.get(key));
 const getAll = (store) => tx(store, 'readonly', (s) => s.getAll());
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 
+/* ---------- toast & confirm dialog (replace native alert/confirm) ---------- */
+let toastTimer;
+function toast(msg) {
+  const el = $('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 2600);
+}
+function appConfirm(msg, okLabel = 'Confirm') {
+  return new Promise((resolve) => {
+    $('dialog-msg').textContent = msg;
+    $('dialog-ok').textContent = okLabel;
+    $('dialog').classList.remove('hidden');
+    const done = (val) => {
+      $('dialog').classList.add('hidden');
+      $('dialog-ok').onclick = $('dialog-cancel').onclick = $('dialog').onclick = null;
+      resolve(val);
+    };
+    $('dialog-ok').onclick = () => done(true);
+    $('dialog-cancel').onclick = () => done(false);
+    $('dialog').onclick = (e) => { if (e.target === $('dialog')) done(false); };
+  });
+}
+
 /* Normalize for search: lowercase, strip Arabic diacritics/tatweel, unify alef and ya forms */
 function norm(s) {
   return (s || '')
@@ -121,7 +146,7 @@ $('btn-note-back').addEventListener('click', async () => {
   renderNotes();
 });
 $('btn-note-delete').addEventListener('click', async () => {
-  if (currentNoteId && confirm('Delete this note?')) {
+  if (currentNoteId && await appConfirm('Delete this note?', 'Delete')) {
     await del('notes', currentNoteId);
     currentNoteId = null;
     $('note-editor-screen').classList.add('hidden');
@@ -216,12 +241,12 @@ async function renderLibrary() {
       const b = await get('books', btn.dataset.track);
       if (!b.status) { b.status = 'ongoing'; await put('books', b); }
       renderBooks();
-      alert(`"${b.title}" added to Currently studying.`);
+      toast(`"${b.title}" added to Currently studying`);
     }));
   $('pdf-list').querySelectorAll('[data-delpdf]').forEach((btn) =>
     btn.addEventListener('click', async () => {
       const b = await get('books', btn.dataset.delpdf);
-      if (!confirm(`Delete "${b.title}" and its indexed text?`)) return;
+      if (!await appConfirm(`Delete "${b.title}" and its indexed text?`, 'Delete')) return;
       await del('books', b.id); await del('pdfText', b.id); await del('pdfBlob', b.id);
       renderLibrary(); renderBooks();
     }));
@@ -360,7 +385,7 @@ async function renderBooks() {
     btn.addEventListener('click', async () => {
       const b = await get('books', btn.dataset.delbook);
       if (b.hasPdf) { b.status = null; await put('books', b); } // keep the PDF in Library
-      else if (confirm(`Remove "${b.title}"?`)) await del('books', b.id);
+      else if (await appConfirm(`Remove "${b.title}"?`, 'Remove')) await del('books', b.id);
       renderBooks();
     }));
 }
@@ -415,7 +440,7 @@ async function renderAqwal() {
     }));
   $('qawl-list').querySelectorAll('[data-qdel]').forEach((btn) =>
     btn.addEventListener('click', async () => {
-      if (confirm('Delete this entry?')) { await del('aqwal', btn.dataset.qdel); renderAqwal(); }
+      if (await appConfirm('Delete this entry?', 'Delete')) { await del('aqwal', btn.dataset.qdel); renderAqwal(); }
     }));
 }
 
@@ -424,7 +449,7 @@ let viewerPdf = null, viewerPage = 1, viewerBookId = null, viewerUrl = null;
 
 async function openViewer(bookId, page) {
   const [book, rec] = await Promise.all([get('books', bookId), get('pdfBlob', bookId)]);
-  if (!rec) { alert('PDF not found on this device.'); return; }
+  if (!rec) { toast('PDF not found on this device'); return; }
   viewerBookId = bookId;
   if (viewerUrl) URL.revokeObjectURL(viewerUrl);
   viewerUrl = URL.createObjectURL(rec.blob);
@@ -460,6 +485,72 @@ $('viewer-close').addEventListener('click', () => {
 $('viewer-prev').addEventListener('click', () => renderViewerPage(viewerPage - 1));
 $('viewer-next').addEventListener('click', () => renderViewerPage(viewerPage + 1));
 $('viewer-page').addEventListener('change', () => renderViewerPage(+$('viewer-page').value));
+
+/* ============ BACKUP ============ */
+const blobToB64 = (blob) => new Promise((res, rej) => {
+  const r = new FileReader();
+  r.onload = () => res(r.result.split(',')[1]);
+  r.onerror = () => rej(r.error);
+  r.readAsDataURL(blob);
+});
+function b64ToBlob(b64) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: 'application/pdf' });
+}
+const backupStatus = (msg) => { $('backup-status').textContent = msg; };
+
+$('btn-export').addEventListener('click', async () => {
+  try {
+    backupStatus('Preparing backup...');
+    const [books, texts, notes, aqwal, blobs] = await Promise.all([
+      getAll('books'), getAll('pdfText'), getAll('notes'), getAll('aqwal'), getAll('pdfBlob'),
+    ]);
+    const pdfs = [];
+    for (let i = 0; i < blobs.length; i++) {
+      backupStatus(`Packing PDF ${i + 1} / ${blobs.length}...`);
+      pdfs.push({ bookId: blobs[i].bookId, b64: await blobToB64(blobs[i].blob) });
+    }
+    const payload = JSON.stringify({ app: 'maktabah', version: 1, exportedAt: new Date().toISOString(), books, texts, notes, aqwal, pdfs });
+    const url = URL.createObjectURL(new Blob([payload], { type: 'application/json' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'maktabah-backup-' + new Date().toISOString().slice(0, 10) + '.mktbh';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    backupStatus(`Backup exported: ${books.length} book records, ${pdfs.length} PDFs, ${notes.length} notes, ${aqwal.length} aqwal. Keep the file somewhere safe.`);
+  } catch (err) {
+    backupStatus('Export failed: ' + err.message);
+  }
+});
+
+$('import-input').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  try {
+    backupStatus('Reading backup file...');
+    const data = JSON.parse(await file.text());
+    if (data.app !== 'maktabah') throw new Error('not a Maktabah backup file');
+    if (!await appConfirm(`Restore backup from ${(data.exportedAt || '').slice(0, 10)}? Existing items are kept; matching items are overwritten.`, 'Restore')) {
+      backupStatus('Restore cancelled.'); return;
+    }
+    for (const b of data.books || []) await put('books', b);
+    for (const t of data.texts || []) await put('pdfText', t);
+    for (const n of data.notes || []) await put('notes', n);
+    for (const a of data.aqwal || []) await put('aqwal', a);
+    const pdfs = data.pdfs || [];
+    for (let i = 0; i < pdfs.length; i++) {
+      backupStatus(`Restoring PDF ${i + 1} / ${pdfs.length}...`);
+      await put('pdfBlob', { bookId: pdfs[i].bookId, blob: b64ToBlob(pdfs[i].b64) });
+    }
+    renderNotes(); renderLibrary(); renderBooks(); renderAqwal();
+    backupStatus('Backup restored, alhamdulillah.');
+  } catch (err) {
+    backupStatus('Restore failed: ' + err.message);
+  }
+});
 
 /* ============ boot ============ */
 (async () => {
