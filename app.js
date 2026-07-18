@@ -646,11 +646,36 @@ function saveAnnots() {
   saveTimer = setTimeout(() => put('annots', { key, docId: vDoc.id, page: vPage, items }), 350);
 }
 
+/* ---- stylus-only mode (finger scrolls, pen edits) ---- */
+let stylusOnly = localStorage.getItem('mk-stylus') === '1';
+function updateStylusBtn() {
+  $('tool-stylus').classList.toggle('active', stylusOnly);
+}
+$('tool-stylus').addEventListener('click', () => {
+  stylusOnly = !stylusOnly;
+  localStorage.setItem('mk-stylus', stylusOnly ? '1' : '0');
+  updateStylusBtn();
+  setTool(vTool);
+  toast(stylusOnly ? 'Stylus only: pen edits, finger scrolls' : 'Finger drawing enabled');
+});
+const isBlockedTouch = (e) => stylusOnly && e.pointerType === 'touch';
+function autoDetectStylus(e) {
+  if (e.pointerType === 'pen' && !stylusOnly && localStorage.getItem('mk-stylus') === null) {
+    stylusOnly = true;
+    localStorage.setItem('mk-stylus', '1');
+    updateStylusBtn();
+    setTool(vTool);
+    toast('Stylus detected: pen edits, finger scrolls');
+  }
+}
+
 /* ---- tools ---- */
 function setTool(t) {
   vTool = t;
   document.querySelectorAll('.tool[data-tool]').forEach((b) => b.classList.toggle('active', b.dataset.tool === t));
   $('annot-canvas').style.pointerEvents = t === 'pan' ? 'none' : 'auto';
+  $('annot-canvas').style.touchAction = (t === 'pan' || stylusOnly) ? 'auto' : 'none';
+  updateStylusBtn();
   const pal = $('palette');
   if (t === 'pen' || t === 'hl') {
     const colors = t === 'pen' ? PEN_COLORS : HL_COLORS;
@@ -703,6 +728,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const el = annotEl();
   el.addEventListener('pointerdown', (e) => {
     if (vTool === 'pan') return;
+    autoDetectStylus(e);
+    if (isBlockedTouch(e)) return;   // finger only scrolls in stylus mode
     e.preventDefault();
     el.setPointerCapture(e.pointerId);
     const [nx, ny] = normPos(e);
@@ -724,7 +751,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
   el.addEventListener('pointermove', (e) => {
-    if (vTool === 'pan') return;
+    if (vTool === 'pan' || isBlockedTouch(e)) return;
     const [nx, ny] = normPos(e);
     if (curStroke) {
       const last = curStroke.pts[curStroke.pts.length - 1];
