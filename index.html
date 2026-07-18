@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f0f11">
+<title>Maktabah</title>
+<link rel="stylesheet" href="styles.css">
+<link rel="manifest" href="manifest.json">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+</head>
+<body>
+
+<header class="topbar">
+  <h1 id="topbar-title">Vault</h1>
+</header>
+
+<!-- ============ VAULT (notes) ============ -->
+<main id="view-vault" class="view active">
+  <div id="notes-list-screen">
+    <div class="row-between">
+      <input id="notes-filter" class="input" type="search" placeholder="Filter notes...">
+      <button id="btn-new-note" class="btn gold">+ Note</button>
+    </div>
+    <ul id="notes-list" class="card-list"></ul>
+    <p id="notes-empty" class="empty">No notes yet. Start your vault, bi idhnillah.</p>
+  </div>
+
+  <div id="note-editor-screen" class="hidden">
+    <div class="row-between">
+      <button id="btn-note-back" class="btn ghost">&larr; Back</button>
+      <div>
+        <button id="btn-note-preview" class="btn ghost">Preview</button>
+        <button id="btn-note-delete" class="btn danger-ghost">Delete</button>
+      </div>
+    </div>
+    <input id="note-title" class="input title-input" type="text" placeholder="Note title">
+    <textarea id="note-body" class="note-body" placeholder="Write here... use [[Note Name]] to link notes, # for headings, **bold**, *italic*, - lists"></textarea>
+    <div id="note-preview" class="note-preview hidden"></div>
+  </div>
+</main>
+
+<!-- ============ LIBRARY (pdfs + search) ============ -->
+<main id="view-library" class="view">
+  <input id="search-input" class="input search-input" type="search"
+         placeholder="Search all books, notes and aqwal...">
+  <div id="search-results" class="hidden"></div>
+
+  <div id="library-home">
+    <label class="upload-tile">
+      <input id="pdf-input" type="file" accept="application/pdf" multiple hidden>
+      <span class="upload-icon">&#8679;</span>
+      <span>Upload book PDF</span>
+      <small>Text is extracted on your device for search</small>
+    </label>
+    <div id="upload-progress" class="progress hidden"></div>
+    <ul id="pdf-list" class="card-list"></ul>
+    <p id="pdf-empty" class="empty">No books uploaded yet.</p>
+  </div>
+</main>
+
+<!-- ============ BOOKS (statuses) ============ -->
+<main id="view-books" class="view">
+  <form id="book-form" class="stack">
+    <input id="book-title" class="input" type="text" placeholder="Book title" required>
+    <input id="book-author" class="input" type="text" placeholder="Author / Shaykh (optional)">
+    <div class="row">
+      <select id="book-status" class="input">
+        <option value="ongoing">Currently studying</option>
+        <option value="completed">Completed</option>
+        <option value="future">Future, in sha Allah</option>
+      </select>
+      <button class="btn gold" type="submit">Add</button>
+    </div>
+  </form>
+
+  <section>
+    <h2 class="section-h">Currently studying</h2>
+    <ul id="list-ongoing" class="card-list"></ul>
+  </section>
+  <section>
+    <h2 class="section-h">Completed, alhamdulillah</h2>
+    <ul id="list-completed" class="card-list"></ul>
+  </section>
+  <section>
+    <h2 class="section-h">To study, in sha Allah</h2>
+    <ul id="list-future" class="card-list"></ul>
+  </section>
+</main>
+
+<!-- ============ AQWAL ============ -->
+<main id="view-aqwal" class="view">
+  <form id="qawl-form" class="stack">
+    <textarea id="qawl-text" class="input" rows="3" placeholder="Hadith or qawl text (Arabic or English)" required></textarea>
+    <input id="qawl-source" class="input" type="text" placeholder="Source / attribution (e.g. Sahih al-Bukhari 6018, or Ibn al-Qayyim, al-Fawaid)">
+    <div class="row">
+      <select id="qawl-type" class="input">
+        <option value="hadith">Hadith of the Nabi &#65018;</option>
+        <option value="qawl">Qawl of the Salaf</option>
+        <option value="ayah">Ayah</option>
+        <option value="other">Other</option>
+      </select>
+      <label class="chk"><input id="qawl-memorize" type="checkbox"> Memorize</label>
+      <button class="btn gold" type="submit">Add</button>
+    </div>
+  </form>
+
+  <div class="row filter-row">
+    <button class="pill active" data-qfilter="all">All</button>
+    <button class="pill" data-qfilter="hadith">Ahadith</button>
+    <button class="pill" data-qfilter="qawl">Aqwal</button>
+    <button class="pill" data-qfilter="memorize">To memorize</button>
+  </div>
+  <ul id="qawl-list" class="card-list"></ul>
+  <p id="qawl-empty" class="empty">Nothing saved yet.</p>
+</main>
+
+<!-- ============ PDF VIEWER MODAL ============ -->
+<div id="viewer" class="viewer hidden">
+  <div class="viewer-bar">
+    <button id="viewer-close" class="btn ghost">&larr; Close</button>
+    <span id="viewer-title" class="viewer-title"></span>
+    <span class="viewer-nav">
+      <button id="viewer-prev" class="btn ghost">&lsaquo;</button>
+      <input id="viewer-page" class="page-input" type="number" min="1">
+      <span id="viewer-total"></span>
+      <button id="viewer-next" class="btn ghost">&rsaquo;</button>
+    </span>
+  </div>
+  <div class="viewer-scroll"><canvas id="viewer-canvas"></canvas></div>
+</div>
+
+<!-- ============ TAB BAR ============ -->
+<nav class="tabbar">
+  <button class="tab active" data-view="vault">Vault</button>
+  <button class="tab" data-view="library">Library</button>
+  <button class="tab" data-view="books">Books</button>
+  <button class="tab" data-view="aqwal">Aqwal</button>
+</nav>
+
+<script src="app.js"></script>
+</body>
+</html>
