@@ -12,14 +12,20 @@ const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
 let db;
 function openDB() {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open('maktabah', 1);
-    req.onupgradeneeded = () => {
+    const req = indexedDB.open('maktabah', 2);
+    req.onupgradeneeded = (e) => {
       const d = req.result;
-      d.createObjectStore('books', { keyPath: 'id' });     // {id,title,author,status,hasPdf,pageCount,addedAt}
-      d.createObjectStore('pdfText', { keyPath: 'bookId' }); // {bookId, pages:[string]}
-      d.createObjectStore('pdfBlob', { keyPath: 'bookId' }); // {bookId, blob}
-      d.createObjectStore('notes', { keyPath: 'id' });     // {id,title,body,updatedAt}
-      d.createObjectStore('aqwal', { keyPath: 'id' });     // {id,type,text,source,memorize,addedAt}
+      if (e.oldVersion < 1) {
+        d.createObjectStore('books', { keyPath: 'id' });     // {id,title,author,status,hasPdf,pageCount,tags,addedAt}
+        d.createObjectStore('pdfText', { keyPath: 'bookId' }); // {bookId, pages:[string]}
+        d.createObjectStore('pdfBlob', { keyPath: 'bookId' }); // {bookId, blob}
+        d.createObjectStore('notes', { keyPath: 'id' });     // {id,title,body,updatedAt}
+        d.createObjectStore('aqwal', { keyPath: 'id' });     // {id,type,text,source,memorize,addedAt}
+      }
+      if (e.oldVersion < 2) {
+        d.createObjectStore('annots', { keyPath: 'key' });    // {key:"type:docId:page", docId, page, items:[]}
+        d.createObjectStore('notebooks', { keyPath: 'id' });  // {id,title,template,bg,pageCount,addedAt}
+      }
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
@@ -308,6 +314,7 @@ async function renderLibrary() {
       const b = await get('books', btn.dataset.delpdf);
       if (!await appConfirm(`Delete "${b.title}" and its indexed text?`, 'Delete')) return;
       await del('books', b.id); await del('pdfText', b.id); await del('pdfBlob', b.id);
+      await purgeAnnots('pdf', b.id);
       renderLibrary(); renderBooks();
     }));
 }
@@ -504,47 +511,354 @@ async function renderAqwal() {
     }));
 }
 
-/* ============ PDF VIEWER ============ */
-let viewerPdf = null, viewerPage = 1, viewerBookId = null, viewerUrl = null;
+/* ============ VIEWER & ANNOTATION ENGINE ============ */
+const PEN_COLORS = ['#1a1a1a', '#c62828', '#1565c0', '#2e7d32', '#c9a227'];
+const HL_COLORS = ['#ffe838', '#8be34a', '#ff8fc0', '#53ccff', '#ffb340'];
+let vDoc = null, vPage = 1, vTool = 'pan', vItems = [], vUrl = null;
+let penColor = PEN_COLORS[0], hlColor = HL_COLORS[0];
+let pageW = 1, pageH = 1;
+const dpr = () => window.devicePixelRatio || 1;
+const vKey = (p) => `${vDoc.type}:${vDoc.id}:${p}`;
+const imgCache = new Map();
 
 async function openViewer(bookId, page) {
   const [book, rec] = await Promise.all([get('books', bookId), get('pdfBlob', bookId)]);
   if (!rec) { toast('PDF not found on this device'); return; }
-  viewerBookId = bookId;
-  if (viewerUrl) URL.revokeObjectURL(viewerUrl);
-  viewerUrl = URL.createObjectURL(rec.blob);
-  viewerPdf = await pdfjsLib.getDocument(viewerUrl).promise;
-  $('viewer-title').textContent = book.title;
-  $('viewer-total').textContent = '/ ' + viewerPdf.numPages;
-  $('viewer-page').max = viewerPdf.numPages;
+  if (vUrl) URL.revokeObjectURL(vUrl);
+  vUrl = URL.createObjectURL(rec.blob);
+  const pdf = await pdfjsLib.getDocument(vUrl).promise;
+  vDoc = { type: 'pdf', id: bookId, title: book.title, pageCount: pdf.numPages, pdf };
+  showViewer(page);
+}
+
+async function openNotebook(nbId, page = 1) {
+  const nb = await get('notebooks', nbId);
+  if (!nb) { toast('Notebook not found'); return; }
+  vDoc = { type: 'nb', id: nbId, title: nb.title, pageCount: nb.pageCount, nb };
+  showViewer(page);
+}
+
+function showViewer(page) {
+  $('viewer-title').textContent = vDoc.title;
+  $('viewer-total').textContent = '/ ' + vDoc.pageCount;
+  $('viewer-page').max = vDoc.pageCount;
+  $('nb-addpage').classList.toggle('hidden', vDoc.type !== 'nb');
+  setTool('pan');
   $('viewer').classList.remove('hidden');
   renderViewerPage(page);
 }
 
-async function renderViewerPage(num) {
-  if (!viewerPdf) return;
-  viewerPage = Math.min(Math.max(1, num), viewerPdf.numPages);
-  $('viewer-page').value = viewerPage;
-  const page = await viewerPdf.getPage(viewerPage);
-  const canvas = $('viewer-canvas');
-  const containerW = $('viewer').clientWidth - 20;
-  const base = page.getViewport({ scale: 1 });
-  const scale = (containerW / base.width) * (window.devicePixelRatio || 1);
-  const vp = page.getViewport({ scale });
-  canvas.width = vp.width;
-  canvas.height = vp.height;
-  canvas.style.width = (vp.width / (window.devicePixelRatio || 1)) + 'px';
-  await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+function drawTemplate(ctx, w, h) {
+  const nb = vDoc.nb;
+  ctx.fillStyle = nb.bg || '#ffffff';
+  ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = 'rgba(40, 60, 120, .16)';
+  ctx.lineWidth = Math.max(1, dpr() * .8);
+  if (nb.template === 'ruled') {
+    const gap = h / 26;
+    for (let y = gap * 2; y < h - gap / 2; y += gap) {
+      ctx.beginPath(); ctx.moveTo(w * .04, y); ctx.lineTo(w * .96, y); ctx.stroke();
+    }
+  } else if (nb.template === 'grid') {
+    const gap = w / 18;
+    for (let x = gap; x < w; x += gap) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); }
+    for (let y = gap; y < h; y += gap) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
+  }
 }
 
+let renderSeq = 0;
+async function renderViewerPage(num) {
+  if (!vDoc) return;
+  const seq = ++renderSeq;
+  vPage = Math.min(Math.max(1, num), vDoc.pageCount);
+  $('viewer-page').value = vPage;
+  const canvas = $('viewer-canvas'), overlay = $('annot-canvas');
+  const cssW = Math.min($('viewer').clientWidth - 20, 700);
+  let cssH;
+  if (vDoc.type === 'pdf') {
+    const page = await vDoc.pdf.getPage(vPage);
+    if (seq !== renderSeq) return;
+    const base = page.getViewport({ scale: 1 });
+    cssH = (base.height / base.width) * cssW;
+    const vp = page.getViewport({ scale: (cssW / base.width) * dpr() });
+    canvas.width = vp.width; canvas.height = vp.height;
+    sizeCanvases(cssW, cssH, overlay);
+    await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
+  } else {
+    cssH = cssW * 1.414;
+    canvas.width = cssW * dpr(); canvas.height = cssH * dpr();
+    sizeCanvases(cssW, cssH, overlay);
+    drawTemplate(canvas.getContext('2d'), canvas.width, canvas.height);
+  }
+  if (seq !== renderSeq) return;
+  pageW = cssW; pageH = cssH;
+  const rec = await get('annots', vKey(vPage));
+  if (seq !== renderSeq) return;
+  vItems = rec ? rec.items : [];
+  drawAnnots();
+}
+function sizeCanvases(cssW, cssH, overlay) {
+  const canvas = $('viewer-canvas');
+  canvas.style.width = cssW + 'px'; canvas.style.height = cssH + 'px';
+  overlay.width = cssW * dpr(); overlay.height = cssH * dpr();
+  overlay.style.width = cssW + 'px'; overlay.style.height = cssH + 'px';
+  $('page-wrap').style.width = cssW + 'px';
+}
+
+function strokePath(ctx, it) {
+  ctx.globalAlpha = it.mode === 'hl' ? .38 : 1;
+  ctx.strokeStyle = it.color;
+  ctx.lineWidth = it.w * pageW * dpr();
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  ctx.beginPath();
+  it.pts.forEach(([x, y], i) => {
+    const px = x * pageW * dpr(), py = y * pageH * dpr();
+    i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+  });
+  if (it.pts.length === 1) ctx.lineTo(it.pts[0][0] * pageW * dpr() + .1, it.pts[0][1] * pageH * dpr());
+  ctx.stroke();
+  ctx.globalAlpha = 1;
+}
+function drawAnnots() {
+  const ctx = $('annot-canvas').getContext('2d');
+  ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+  for (const it of vItems) {
+    if (it.kind === 'stroke') strokePath(ctx, it);
+    else if (it.kind === 'img') {
+      let im = imgCache.get(it.b64);
+      if (!im) {
+        im = new Image();
+        im.onload = () => drawAnnots();
+        im.src = it.b64;
+        imgCache.set(it.b64, im);
+      }
+      if (im.complete && im.naturalWidth) {
+        ctx.drawImage(im, it.x * pageW * dpr(), it.y * pageH * dpr(), it.w * pageW * dpr(), it.h * pageH * dpr());
+      }
+    }
+  }
+}
+
+let saveTimer;
+function saveAnnots() {
+  clearTimeout(saveTimer);
+  const key = vKey(vPage), items = vItems;
+  saveTimer = setTimeout(() => put('annots', { key, docId: vDoc.id, page: vPage, items }), 350);
+}
+
+/* ---- tools ---- */
+function setTool(t) {
+  vTool = t;
+  document.querySelectorAll('.tool[data-tool]').forEach((b) => b.classList.toggle('active', b.dataset.tool === t));
+  $('annot-canvas').style.pointerEvents = t === 'pan' ? 'none' : 'auto';
+  const pal = $('palette');
+  if (t === 'pen' || t === 'hl') {
+    const colors = t === 'pen' ? PEN_COLORS : HL_COLORS;
+    const cur = t === 'pen' ? penColor : hlColor;
+    pal.innerHTML = colors.map((c) =>
+      `<button class="dot ${c === cur ? 'active' : ''}" style="background:${c}" data-c="${c}"></button>`).join('');
+    pal.querySelectorAll('.dot').forEach((d) => d.addEventListener('click', () => {
+      if (t === 'pen') penColor = d.dataset.c; else hlColor = d.dataset.c;
+      setTool(t);
+    }));
+  } else pal.innerHTML = '';
+}
+document.querySelectorAll('.tool[data-tool]').forEach((b) =>
+  b.addEventListener('click', () => {
+    if (b.dataset.tool === 'img') $('img-input').click();
+    setTool(b.dataset.tool);
+  }));
+$('tool-undo').addEventListener('click', () => {
+  if (vItems.length) { vItems.pop(); drawAnnots(); saveAnnots(); }
+});
+
+/* ---- pointer drawing ---- */
+let curStroke = null, dragImg = null, dragMode = null, dragStart = null;
+const annotEl = () => $('annot-canvas');
+function normPos(e) {
+  const r = annotEl().getBoundingClientRect();
+  return [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height];
+}
+function hitImage(nx, ny) {
+  for (let i = vItems.length - 1; i >= 0; i--) {
+    const it = vItems[i];
+    if (it.kind !== 'img') continue;
+    if (nx >= it.x && nx <= it.x + it.w && ny >= it.y && ny <= it.y + it.h) return it;
+  }
+  return null;
+}
+function eraseAt(nx, ny) {
+  const rPx = 16;
+  const before = vItems.length;
+  vItems = vItems.filter((it) => {
+    if (it.kind === 'stroke') {
+      return !it.pts.some(([x, y]) => Math.hypot((x - nx) * pageW, (y - ny) * pageH) < rPx);
+    }
+    return !(nx >= it.x && nx <= it.x + it.w && ny >= it.y && ny <= it.y + it.h);
+  });
+  if (vItems.length !== before) { drawAnnots(); saveAnnots(); }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  const el = annotEl();
+  el.addEventListener('pointerdown', (e) => {
+    if (vTool === 'pan') return;
+    e.preventDefault();
+    el.setPointerCapture(e.pointerId);
+    const [nx, ny] = normPos(e);
+    if (vTool === 'pen' || vTool === 'hl') {
+      curStroke = {
+        kind: 'stroke', mode: vTool,
+        color: vTool === 'pen' ? penColor : hlColor,
+        w: vTool === 'pen' ? .005 : .024,
+        pts: [[nx, ny]],
+      };
+    } else if (vTool === 'erase') {
+      eraseAt(nx, ny);
+    } else if (vTool === 'img') {
+      const it = hitImage(nx, ny);
+      if (it) {
+        const nearCorner = Math.hypot((nx - it.x - it.w) * pageW, (ny - it.y - it.h) * pageH) < 26;
+        dragImg = it; dragMode = nearCorner ? 'resize' : 'move'; dragStart = [nx, ny, it.x, it.y, it.w, it.h];
+      }
+    }
+  });
+  el.addEventListener('pointermove', (e) => {
+    if (vTool === 'pan') return;
+    const [nx, ny] = normPos(e);
+    if (curStroke) {
+      const last = curStroke.pts[curStroke.pts.length - 1];
+      curStroke.pts.push([nx, ny]);
+      const ctx = el.getContext('2d');
+      ctx.globalAlpha = curStroke.mode === 'hl' ? .38 : 1;
+      ctx.strokeStyle = curStroke.color;
+      ctx.lineWidth = curStroke.w * pageW * dpr();
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(last[0] * pageW * dpr(), last[1] * pageH * dpr());
+      ctx.lineTo(nx * pageW * dpr(), ny * pageH * dpr());
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    } else if (vTool === 'erase' && e.buttons) {
+      eraseAt(nx, ny);
+    } else if (dragImg) {
+      const [sx, sy, ox, oy, ow, oh] = dragStart;
+      if (dragMode === 'move') { dragImg.x = ox + nx - sx; dragImg.y = oy + ny - sy; }
+      else {
+        dragImg.w = Math.max(.05, ow + nx - sx);
+        dragImg.h = Math.max(.05, oh + ny - sy);
+      }
+      drawAnnots();
+    }
+  });
+  const finish = () => {
+    if (curStroke) {
+      if (curStroke.pts.length > 1) { vItems.push(curStroke); saveAnnots(); }
+      curStroke = null;
+      drawAnnots();
+    }
+    if (dragImg) { saveAnnots(); dragImg = null; dragMode = null; }
+  };
+  el.addEventListener('pointerup', finish);
+  el.addEventListener('pointercancel', finish);
+});
+
+/* ---- image insert ---- */
+$('img-input').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file || !vDoc) return;
+  const b64 = await new Promise((res) => {
+    const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(file);
+  });
+  const im = new Image();
+  im.onload = () => {
+    const w = .5;
+    const h = (im.naturalHeight / im.naturalWidth) * (w * pageW) / pageH;
+    vItems.push({ kind: 'img', b64, x: .25, y: .15, w, h });
+    imgCache.set(b64, im);
+    drawAnnots();
+    saveAnnots();
+    toast('Image added. Drag to move, drag its corner to resize');
+  };
+  im.src = b64;
+});
+
+/* ---- viewer chrome ---- */
 $('viewer-close').addEventListener('click', () => {
   $('viewer').classList.add('hidden');
-  if (viewerPdf) { viewerPdf.destroy(); viewerPdf = null; }
-  if (viewerUrl) { URL.revokeObjectURL(viewerUrl); viewerUrl = null; }
+  if (vDoc && vDoc.pdf) vDoc.pdf.destroy();
+  if (vUrl) { URL.revokeObjectURL(vUrl); vUrl = null; }
+  vDoc = null; vItems = [];
 });
-$('viewer-prev').addEventListener('click', () => renderViewerPage(viewerPage - 1));
-$('viewer-next').addEventListener('click', () => renderViewerPage(viewerPage + 1));
+$('viewer-prev').addEventListener('click', () => renderViewerPage(vPage - 1));
+$('viewer-next').addEventListener('click', () => renderViewerPage(vPage + 1));
 $('viewer-page').addEventListener('change', () => renderViewerPage(+$('viewer-page').value));
+$('nb-addpage').addEventListener('click', async () => {
+  if (!vDoc || vDoc.type !== 'nb') return;
+  vDoc.nb.pageCount++;
+  vDoc.pageCount = vDoc.nb.pageCount;
+  await put('notebooks', vDoc.nb);
+  $('viewer-total').textContent = '/ ' + vDoc.pageCount;
+  $('viewer-page').max = vDoc.pageCount;
+  renderViewerPage(vDoc.pageCount);
+  renderNotebooks();
+});
+
+/* ============ NOTEBOOKS ============ */
+async function purgeAnnots(type, docId) {
+  const all = await getAll('annots');
+  for (const a of all) if (a.key.startsWith(type + ':' + docId + ':')) await del('annots', a.key);
+}
+
+async function renderNotebooks() {
+  const nbs = (await getAll('notebooks')).sort((a, b) => b.addedAt - a.addedAt);
+  $('nb-section').classList.toggle('hidden', !nbs.length);
+  $('nb-list').innerHTML = nbs.map((n) => `
+    <li class="card">
+      <div class="c-title">${esc(n.title)}</div>
+      <div class="c-sub">${n.pageCount} ${n.pageCount === 1 ? 'page' : 'pages'} &middot; ${n.template}</div>
+      <div class="c-actions">
+        <button class="mini gold" data-nbopen="${n.id}">Open</button>
+        <button class="mini danger" data-nbdel="${n.id}">Delete</button>
+      </div>
+    </li>`).join('');
+  $('nb-list').querySelectorAll('[data-nbopen]').forEach((btn) =>
+    btn.addEventListener('click', () => openNotebook(btn.dataset.nbopen)));
+  $('nb-list').querySelectorAll('[data-nbdel]').forEach((btn) =>
+    btn.addEventListener('click', async () => {
+      const n = await get('notebooks', btn.dataset.nbdel);
+      if (!await appConfirm(`Delete notebook "${n.title}" and everything written in it?`, 'Delete')) return;
+      await del('notebooks', n.id);
+      await purgeAnnots('nb', n.id);
+      renderNotebooks();
+    }));
+}
+
+let nbTpl = 'plain', nbBg = '#ffffff';
+$('btn-new-nb').addEventListener('click', () => {
+  $('nb-title').value = '';
+  $('nbsheet').classList.remove('hidden');
+});
+$('nb-cancel').addEventListener('click', () => $('nbsheet').classList.add('hidden'));
+document.querySelectorAll('#nb-template [data-tpl]').forEach((p) =>
+  p.addEventListener('click', () => {
+    nbTpl = p.dataset.tpl;
+    document.querySelectorAll('#nb-template [data-tpl]').forEach((x) => x.classList.toggle('active', x === p));
+  }));
+document.querySelectorAll('#nb-bg [data-bg]').forEach((s) =>
+  s.addEventListener('click', () => {
+    nbBg = s.dataset.bg;
+    document.querySelectorAll('#nb-bg [data-bg]').forEach((x) => x.classList.toggle('active', x === s));
+  }));
+$('nb-create').addEventListener('click', async () => {
+  const title = $('nb-title').value.trim() || 'Untitled notebook';
+  const nb = { id: uid(), title, template: nbTpl, bg: nbBg, pageCount: 1, addedAt: Date.now() };
+  await put('notebooks', nb);
+  $('nbsheet').classList.add('hidden');
+  renderNotebooks();
+  openNotebook(nb.id);
+});
 
 /* ============ BACKUP ============ */
 const blobToB64 = (blob) => new Promise((res, rej) => {
@@ -564,15 +878,16 @@ const backupStatus = (msg) => { $('backup-status').textContent = msg; };
 $('btn-export').addEventListener('click', async () => {
   try {
     backupStatus('Preparing backup...');
-    const [books, texts, notes, aqwal, blobs] = await Promise.all([
+    const [books, texts, notes, aqwal, blobs, annots, notebooks] = await Promise.all([
       getAll('books'), getAll('pdfText'), getAll('notes'), getAll('aqwal'), getAll('pdfBlob'),
+      getAll('annots'), getAll('notebooks'),
     ]);
     const pdfs = [];
     for (let i = 0; i < blobs.length; i++) {
       backupStatus(`Packing PDF ${i + 1} / ${blobs.length}...`);
       pdfs.push({ bookId: blobs[i].bookId, b64: await blobToB64(blobs[i].blob) });
     }
-    const payload = JSON.stringify({ app: 'maktabah', version: 1, exportedAt: new Date().toISOString(), books, texts, notes, aqwal, pdfs });
+    const payload = JSON.stringify({ app: 'maktabah', version: 2, exportedAt: new Date().toISOString(), books, texts, notes, aqwal, pdfs, annots, notebooks });
     const url = URL.createObjectURL(new Blob([payload], { type: 'application/json' }));
     const a = document.createElement('a');
     a.href = url;
@@ -600,12 +915,14 @@ $('import-input').addEventListener('change', async (e) => {
     for (const t of data.texts || []) await put('pdfText', t);
     for (const n of data.notes || []) await put('notes', n);
     for (const a of data.aqwal || []) await put('aqwal', a);
+    for (const an of data.annots || []) await put('annots', an);
+    for (const nb of data.notebooks || []) await put('notebooks', nb);
     const pdfs = data.pdfs || [];
     for (let i = 0; i < pdfs.length; i++) {
       backupStatus(`Restoring PDF ${i + 1} / ${pdfs.length}...`);
       await put('pdfBlob', { bookId: pdfs[i].bookId, blob: b64ToBlob(pdfs[i].b64) });
     }
-    renderNotes(); renderLibrary(); renderBooks(); renderAqwal();
+    renderNotes(); renderLibrary(); renderBooks(); renderAqwal(); renderNotebooks();
     backupStatus('Backup restored, alhamdulillah.');
   } catch (err) {
     backupStatus('Restore failed: ' + err.message);
@@ -620,4 +937,5 @@ $('import-input').addEventListener('change', async (e) => {
   renderLibrary();
   renderBooks();
   renderAqwal();
+  renderNotebooks();
 })();

@@ -57,7 +57,13 @@
       <span>Upload book PDF</span>
       <small>Text is extracted on your device for search</small>
     </label>
+    <button id="btn-new-nb" class="btn" style="width:100%;margin-bottom:14px">+ New notebook</button>
+    <section id="nb-section" class="hidden">
+      <h2 class="section-h">Notebooks</h2>
+      <ul id="nb-list" class="card-list"></ul>
+    </section>
     <div id="upload-progress" class="progress hidden"></div>
+    <h2 class="section-h">Books</h2>
     <div id="tag-filter" class="tag-scroll hidden"></div>
     <ul id="pdf-list" class="card-list"></ul>
     <p id="pdf-empty" class="empty">No books uploaded yet.</p>
@@ -129,19 +135,62 @@
   <p id="qawl-empty" class="empty">Nothing saved yet.</p>
 </main>
 
-<!-- ============ PDF VIEWER MODAL ============ -->
+<!-- ============ VIEWER / EDITOR MODAL ============ -->
 <div id="viewer" class="viewer hidden">
   <div class="viewer-bar">
-    <button id="viewer-close" class="btn ghost">&larr; Close</button>
+    <button id="viewer-close" class="btn ghost">&larr;</button>
     <span id="viewer-title" class="viewer-title"></span>
     <span class="viewer-nav">
       <button id="viewer-prev" class="btn ghost">&lsaquo;</button>
       <input id="viewer-page" class="page-input" type="number" min="1">
       <span id="viewer-total"></span>
       <button id="viewer-next" class="btn ghost">&rsaquo;</button>
+      <button id="nb-addpage" class="btn ghost hidden">+ Page</button>
     </span>
   </div>
-  <div class="viewer-scroll"><canvas id="viewer-canvas"></canvas></div>
+  <div class="toolrow">
+    <button class="tool active" data-tool="pan">Scroll</button>
+    <button class="tool" data-tool="pen">Pen</button>
+    <button class="tool" data-tool="hl">Mark</button>
+    <button class="tool" data-tool="erase">Erase</button>
+    <button class="tool" data-tool="img">Image</button>
+    <span id="palette" class="palette"></span>
+    <button id="tool-undo" class="tool">Undo</button>
+  </div>
+  <div class="viewer-scroll">
+    <div id="page-wrap">
+      <canvas id="viewer-canvas"></canvas>
+      <canvas id="annot-canvas"></canvas>
+    </div>
+  </div>
+  <input id="img-input" type="file" accept="image/*" hidden>
+</div>
+
+<!-- ============ NEW NOTEBOOK SHEET ============ -->
+<div id="nbsheet" class="dialog-overlay hidden" role="dialog" aria-modal="true">
+  <div class="dialog">
+    <p class="sheet-title">New notebook</p>
+    <input id="nb-title" class="input" type="text" placeholder="Notebook name" style="margin-bottom:14px">
+    <p class="mini-label">Page template</p>
+    <div class="chip-wrap" id="nb-template">
+      <button class="pill active" data-tpl="plain">Plain</button>
+      <button class="pill" data-tpl="ruled">Ruled</button>
+      <button class="pill" data-tpl="grid">Grid</button>
+    </div>
+    <p class="mini-label">Page color</p>
+    <div class="chip-wrap" id="nb-bg">
+      <button class="swatch active" data-bg="#ffffff" style="background:#ffffff"></button>
+      <button class="swatch" data-bg="#f7f1e3" style="background:#f7f1e3"></button>
+      <button class="swatch" data-bg="#fdf6d8" style="background:#fdf6d8"></button>
+      <button class="swatch" data-bg="#e8f2e9" style="background:#e8f2e9"></button>
+      <button class="swatch" data-bg="#e9eef6" style="background:#e9eef6"></button>
+      <button class="swatch" data-bg="#f6e9ec" style="background:#f6e9ec"></button>
+    </div>
+    <div class="dialog-actions">
+      <button id="nb-cancel" class="btn">Cancel</button>
+      <button id="nb-create" class="btn gold">Create</button>
+    </div>
+  </div>
 </div>
 
 <!-- ============ TAG SHEET ============ -->
