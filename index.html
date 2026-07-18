@@ -58,6 +58,7 @@
       <small>Text is extracted on your device for search</small>
     </label>
     <div id="upload-progress" class="progress hidden"></div>
+    <div id="tag-filter" class="tag-scroll hidden"></div>
     <ul id="pdf-list" class="card-list"></ul>
     <p id="pdf-empty" class="empty">No books uploaded yet.</p>
 
@@ -141,6 +142,21 @@
     </span>
   </div>
   <div class="viewer-scroll"><canvas id="viewer-canvas"></canvas></div>
+</div>
+
+<!-- ============ TAG SHEET ============ -->
+<div id="tagsheet" class="dialog-overlay hidden" role="dialog" aria-modal="true">
+  <div class="dialog">
+    <p class="sheet-title">Subject tags</p>
+    <div id="tagsheet-chips" class="chip-wrap"></div>
+    <div class="row" style="margin-bottom:14px">
+      <input id="tag-custom" class="input" type="text" placeholder="Custom tag">
+      <button id="tag-add" class="btn">Add</button>
+    </div>
+    <div class="dialog-actions">
+      <button id="tagsheet-done" class="btn gold">Done</button>
+    </div>
+  </div>
 </div>
 
 <!-- ============ TOAST & DIALOG ============ -->

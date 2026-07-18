@@ -221,19 +221,79 @@ async function ingestPdf(file) {
   }
 }
 
+/* ---------- subject tags ---------- */
+const PRESET_TAGS = ['Aqeedah', 'Fiqh', 'Usul al-Fiqh', 'Hadith', 'Mustalah al-Hadith', 'Tafsir',
+  'Uloom al-Quran', 'Seerah', 'Arabic', 'Tazkiyah', 'Adab', 'Tarikh', 'Fatawa'];
+let libTagFilter = null;
+
+function renderTagFilter(books) {
+  const inUse = [...new Set(books.flatMap((b) => b.tags || []))];
+  const bar = $('tag-filter');
+  if (!inUse.length) { bar.classList.add('hidden'); libTagFilter = null; return; }
+  if (libTagFilter && !inUse.includes(libTagFilter)) libTagFilter = null;
+  bar.classList.remove('hidden');
+  bar.innerHTML = ['All', ...inUse].map((t) =>
+    `<button class="pill ${(t === 'All' ? !libTagFilter : libTagFilter === t) ? 'active' : ''}"
+       data-tagf="${esc(t)}">${esc(t)}</button>`).join('');
+  bar.querySelectorAll('[data-tagf]').forEach((p) =>
+    p.addEventListener('click', () => {
+      libTagFilter = p.dataset.tagf === 'All' ? null : p.dataset.tagf;
+      renderLibrary();
+    }));
+}
+
+function openTagSheet(bookId) {
+  return new Promise(async (resolve) => {
+    const book = await get('books', bookId);
+    const sel = new Set(book.tags || []);
+    const drawChips = () => {
+      const all = [...new Set([...PRESET_TAGS, ...sel])];
+      $('tagsheet-chips').innerHTML = all.map((t) =>
+        `<button class="pill ${sel.has(t) ? 'active' : ''}" data-chip="${esc(t)}">${esc(t)}</button>`).join('');
+      $('tagsheet-chips').querySelectorAll('[data-chip]').forEach((c) =>
+        c.addEventListener('click', () => {
+          sel.has(c.dataset.chip) ? sel.delete(c.dataset.chip) : sel.add(c.dataset.chip);
+          drawChips();
+        }));
+    };
+    drawChips();
+    $('tag-custom').value = '';
+    $('tagsheet').classList.remove('hidden');
+    const addCustom = () => {
+      const t = $('tag-custom').value.trim();
+      if (t) { sel.add(t); $('tag-custom').value = ''; drawChips(); }
+    };
+    $('tag-add').onclick = addCustom;
+    $('tag-custom').onkeydown = (e) => { if (e.key === 'Enter') { e.preventDefault(); addCustom(); } };
+    $('tagsheet-done').onclick = async () => {
+      book.tags = [...sel];
+      await put('books', book);
+      $('tagsheet').classList.add('hidden');
+      $('tagsheet-done').onclick = $('tag-add').onclick = $('tag-custom').onkeydown = null;
+      resolve();
+    };
+  });
+}
+
 async function renderLibrary() {
-  const books = (await getAll('books')).filter((b) => b.hasPdf).sort((a, b) => b.addedAt - a.addedAt);
-  $('pdf-empty').classList.toggle('hidden', books.length > 0);
+  const all = (await getAll('books')).filter((b) => b.hasPdf).sort((a, b) => b.addedAt - a.addedAt);
+  renderTagFilter(all);
+  const books = libTagFilter ? all.filter((b) => (b.tags || []).includes(libTagFilter)) : all;
+  $('pdf-empty').classList.toggle('hidden', all.length > 0);
   $('pdf-list').innerHTML = books.map((b) => `
     <li class="card">
       <div class="c-title">${esc(b.title)}</div>
       <div class="c-sub">${b.pageCount} pages</div>
+      ${(b.tags || []).length ? `<div class="c-tags">${b.tags.map((t) => `<span class="badge">${esc(t)}</span>`).join('')}</div>` : ''}
       <div class="c-actions">
         <button class="mini gold" data-open="${b.id}">Open</button>
+        <button class="mini" data-tags="${b.id}">Tags</button>
         <button class="mini" data-track="${b.id}">Track in My Books</button>
         <button class="mini danger" data-delpdf="${b.id}">Delete</button>
       </div>
     </li>`).join('');
+  $('pdf-list').querySelectorAll('[data-tags]').forEach((btn) =>
+    btn.addEventListener('click', async () => { await openTagSheet(btn.dataset.tags); renderLibrary(); }));
   $('pdf-list').querySelectorAll('[data-open]').forEach((btn) =>
     btn.addEventListener('click', () => openViewer(btn.dataset.open, 1)));
   $('pdf-list').querySelectorAll('[data-track]').forEach((btn) =>

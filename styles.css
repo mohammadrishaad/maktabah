@@ -262,6 +262,20 @@ section:first-of-type .section-h { margin-top: 18px; }
 }
 .badge.mem { border-color: rgba(201, 162, 39, .5); color: var(--gold-soft); background: var(--gold-dim); }
 
+/* ---------- tags ---------- */
+.tag-scroll {
+  display: flex; gap: 7px;
+  overflow-x: auto;
+  padding-bottom: 6px;
+  margin-bottom: 10px;
+  scrollbar-width: none;
+}
+.tag-scroll::-webkit-scrollbar { display: none; }
+.tag-scroll .pill { flex-shrink: 0; }
+.c-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 7px; }
+.sheet-title { font-size: 1.02rem; font-weight: 650; margin-bottom: 12px; }
+.chip-wrap { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 14px; max-height: 40vh; overflow-y: auto; }
+
 /* ---------- viewer ---------- */
 .viewer { position: fixed; inset: 0; z-index: 50; background: #0a0a0c; display: flex; flex-direction: column; }
 .viewer-bar {
