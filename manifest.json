@@ -2,6 +2,7 @@
   "name": "Maktabah",
   "short_name": "Maktabah",
   "description": "Personal Islamic study library: searchable book PDFs, study tracker, notes, and aqwal.",
+  "id": "./",
   "start_url": ".",
   "scope": ".",
   "display": "standalone",
@@ -11,7 +12,7 @@
     "enctype": "multipart/form-data",
     "params": {
       "files": [
-        { "name": "pdfs", "accept": ["application/pdf", ".pdf"] }
+        { "name": "pdfs", "accept": ["application/pdf", "application/octet-stream", ".pdf"] }
       ]
     }
   },
