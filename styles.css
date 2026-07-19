@@ -296,10 +296,11 @@ section:first-of-type .section-h { margin-top: 18px; }
   text-align: center;
   font-family: inherit;
 }
-.viewer-scroll { flex: 1; overflow: auto; padding: 10px; }
-#page-wrap { position: relative; margin: 0 auto; border-radius: 4px; overflow: hidden; box-shadow: 0 4px 24px rgba(0,0,0,.4); }
-#viewer-canvas { display: block; background: #fff; }
-#annot-canvas { position: absolute; inset: 0; touch-action: none; pointer-events: none; }
+.viewer-scroll { flex: 1; overflow: auto; padding: 10px; position: relative; }
+.page-wrap { position: relative; margin: 0 auto 12px; border-radius: 4px; overflow: hidden; box-shadow: 0 4px 24px rgba(0,0,0,.4); background: #fff; }
+.pdf-canvas { display: block; background: #fff; width: 100%; height: 100%; }
+.annot-canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; }
+#pages.pan .annot-canvas { pointer-events: none; }
 
 .toolrow {
   display: flex; align-items: center; gap: 5px;

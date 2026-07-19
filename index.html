@@ -146,6 +146,7 @@
       <span id="viewer-total"></span>
       <button id="viewer-next" class="btn ghost">&rsaquo;</button>
       <button id="nb-addpage" class="btn ghost hidden">+ Page</button>
+      <button id="viewer-fs" class="btn ghost" title="Full screen">&#x26F6;</button>
     </span>
   </div>
   <div class="toolrow">
@@ -159,10 +160,7 @@
     <button id="tool-undo" class="tool">Undo</button>
   </div>
   <div class="viewer-scroll">
-    <div id="page-wrap">
-      <canvas id="viewer-canvas"></canvas>
-      <canvas id="annot-canvas"></canvas>
-    </div>
+    <div id="pages" class="pan"></div>
   </div>
   <input id="img-input" type="file" accept="image/*" hidden>
 </div>

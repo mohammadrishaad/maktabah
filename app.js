@@ -514,12 +514,20 @@ async function renderAqwal() {
 /* ============ VIEWER & ANNOTATION ENGINE ============ */
 const PEN_COLORS = ['#1a1a1a', '#c62828', '#1565c0', '#2e7d32', '#c9a227'];
 const HL_COLORS = ['#ffe838', '#8be34a', '#ff8fc0', '#53ccff', '#ffb340'];
-let vDoc = null, vPage = 1, vTool = 'pan', vItems = [], vUrl = null;
+let vDoc = null, vPage = 1, vTool = 'pan', vUrl = null, vSeq = 0;
 let penColor = PEN_COLORS[0], hlColor = HL_COLORS[0];
-let pageW = 1, pageH = 1;
+let cssW = 1, vPages = [], lastEditPage = null;
 const dpr = () => window.devicePixelRatio || 1;
 const vKey = (p) => `${vDoc.type}:${vDoc.id}:${p}`;
 const imgCache = new Map();
+const scroller = () => document.querySelector('.viewer-scroll');
+/* rAF with a timeout fallback: animation frames pause when the app is backgrounded */
+function nextTick(cb) {
+  let done = false;
+  const run = () => { if (!done) { done = true; cb(); } };
+  requestAnimationFrame(run);
+  setTimeout(run, 60);
+}
 
 async function openViewer(bookId, page) {
   const [book, rec] = await Promise.all([get('books', bookId), get('pdfBlob', bookId)]);
@@ -528,24 +536,136 @@ async function openViewer(bookId, page) {
   vUrl = URL.createObjectURL(rec.blob);
   const pdf = await pdfjsLib.getDocument(vUrl).promise;
   vDoc = { type: 'pdf', id: bookId, title: book.title, pageCount: pdf.numPages, pdf };
-  showViewer(page);
+  await showViewer(page);
 }
 
 async function openNotebook(nbId, page = 1) {
   const nb = await get('notebooks', nbId);
   if (!nb) { toast('Notebook not found'); return; }
   vDoc = { type: 'nb', id: nbId, title: nb.title, pageCount: nb.pageCount, nb };
-  showViewer(page);
+  await showViewer(page);
 }
 
-function showViewer(page) {
+/* All pages live in one vertical scroll; only pages near the viewport are
+   actually rendered (IntersectionObserver), so large books stay light. */
+async function showViewer(page) {
+  const seq = ++vSeq;
   $('viewer-title').textContent = vDoc.title;
   $('viewer-total').textContent = '/ ' + vDoc.pageCount;
   $('viewer-page').max = vDoc.pageCount;
   $('nb-addpage').classList.toggle('hidden', vDoc.type !== 'nb');
   setTool('pan');
   $('viewer').classList.remove('hidden');
-  renderViewerPage(page);
+  cssW = Math.min($('viewer').clientWidth - 20, 700);
+  let ratio = 1.414;
+  if (vDoc.type === 'pdf') {
+    const p1 = await vDoc.pdf.getPage(1);
+    const b = p1.getViewport({ scale: 1 });
+    ratio = b.height / b.width;
+  }
+  if (seq !== vSeq) return;
+  $('pages').innerHTML = '';
+  vPages = [];
+  for (let n = 1; n <= vDoc.pageCount; n++) addPageShell(n, cssW * ratio);
+  vPage = Math.min(Math.max(1, page), vDoc.pageCount);
+  $('viewer-page').value = vPage;
+  nextTick(() => {
+    if (seq !== vSeq) return;
+    scrollToPage(vPage, true);
+    ensurePages();
+  });
+}
+
+function addPageShell(n, cssH) {
+  const wrap = document.createElement('div');
+  wrap.className = 'page-wrap';
+  wrap.dataset.page = n;
+  wrap.style.width = cssW + 'px';
+  wrap.style.height = cssH + 'px';
+  $('pages').appendChild(wrap);
+  vPages[n] = { wrap, cssH, rendered: false, rendering: false, items: null };
+}
+
+/* render pages within ~2 screens of the viewport, free the rest */
+function ensurePages() {
+  if (!vDoc || !vPages.length) return;
+  const sc = scroller();
+  const top = sc.scrollTop - sc.clientHeight * 2;
+  const bot = sc.scrollTop + sc.clientHeight * 3;
+  for (let n = 1; n < vPages.length; n++) {
+    const p = vPages[n];
+    const y = p.wrap.offsetTop;
+    if (y + p.cssH > top && y < bot) renderPage(n);
+    else freePage(n);
+  }
+}
+
+function freePage(n) {
+  const p = vPages[n];
+  if (!p || !p.rendered || p.rendering) return;
+  p.rendered = false;
+  p.wrap.innerHTML = '';
+  p.canvas = p.overlay = null;
+}
+
+async function renderPage(n) {
+  const p = vPages[n], seq = vSeq;
+  if (!p || p.rendered || p.rendering) return;
+  p.rendering = true;
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.className = 'pdf-canvas';
+    const overlay = document.createElement('canvas');
+    overlay.className = 'annot-canvas';
+    overlay.dataset.page = n;
+    if (vDoc.type === 'pdf') {
+      const page = await vDoc.pdf.getPage(n);
+      if (seq !== vSeq) return;
+      const base = page.getViewport({ scale: 1 });
+      p.cssH = (base.height / base.width) * cssW;
+      p.wrap.style.height = p.cssH + 'px';
+      const vp = page.getViewport({ scale: (cssW / base.width) * dpr() });
+      canvas.width = vp.width; canvas.height = vp.height;
+      await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp, intent: 'print' }).promise;
+    } else {
+      canvas.width = cssW * dpr(); canvas.height = p.cssH * dpr();
+      drawTemplate(canvas.getContext('2d'), canvas.width, canvas.height);
+    }
+    if (seq !== vSeq) return;
+    overlay.width = cssW * dpr(); overlay.height = p.cssH * dpr();
+    if (p.items === null) {
+      const rec = await get('annots', vKey(n));
+      if (seq !== vSeq) return;
+      p.items = rec ? rec.items : [];
+    }
+    p.wrap.innerHTML = '';
+    p.wrap.appendChild(canvas);
+    p.wrap.appendChild(overlay);
+    p.canvas = canvas; p.overlay = overlay;
+    p.rendered = true;
+    drawAnnots(n);
+  } finally { p.rendering = false; }
+}
+
+function scrollToPage(n, instant) {
+  if (!vDoc) return;
+  n = Math.min(Math.max(1, n), vDoc.pageCount);
+  const p = vPages[n];
+  if (!p) return;
+  scroller().scrollTo({ top: p.wrap.offsetTop - 8, behavior: instant ? 'auto' : 'smooth' });
+  vPage = n;
+  $('viewer-page').value = n;
+}
+
+function updateCurrentPage() {
+  if (!vDoc || !vPages.length) return;
+  const sc = scroller();
+  const mid = sc.scrollTop + sc.clientHeight / 2;
+  let n = 1;
+  for (let i = 1; i < vPages.length; i++) {
+    if (vPages[i].wrap.offsetTop <= mid) n = i; else break;
+  }
+  if (n !== vPage) { vPage = n; $('viewer-page').value = n; }
 }
 
 function drawTemplate(ctx, w, h) {
@@ -566,84 +686,47 @@ function drawTemplate(ctx, w, h) {
   }
 }
 
-let renderSeq = 0;
-async function renderViewerPage(num) {
-  if (!vDoc) return;
-  const seq = ++renderSeq;
-  vPage = Math.min(Math.max(1, num), vDoc.pageCount);
-  $('viewer-page').value = vPage;
-  const canvas = $('viewer-canvas'), overlay = $('annot-canvas');
-  const cssW = Math.min($('viewer').clientWidth - 20, 700);
-  let cssH;
-  if (vDoc.type === 'pdf') {
-    const page = await vDoc.pdf.getPage(vPage);
-    if (seq !== renderSeq) return;
-    const base = page.getViewport({ scale: 1 });
-    cssH = (base.height / base.width) * cssW;
-    const vp = page.getViewport({ scale: (cssW / base.width) * dpr() });
-    canvas.width = vp.width; canvas.height = vp.height;
-    sizeCanvases(cssW, cssH, overlay);
-    await page.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise;
-  } else {
-    cssH = cssW * 1.414;
-    canvas.width = cssW * dpr(); canvas.height = cssH * dpr();
-    sizeCanvases(cssW, cssH, overlay);
-    drawTemplate(canvas.getContext('2d'), canvas.width, canvas.height);
-  }
-  if (seq !== renderSeq) return;
-  pageW = cssW; pageH = cssH;
-  const rec = await get('annots', vKey(vPage));
-  if (seq !== renderSeq) return;
-  vItems = rec ? rec.items : [];
-  drawAnnots();
-}
-function sizeCanvases(cssW, cssH, overlay) {
-  const canvas = $('viewer-canvas');
-  canvas.style.width = cssW + 'px'; canvas.style.height = cssH + 'px';
-  overlay.width = cssW * dpr(); overlay.height = cssH * dpr();
-  overlay.style.width = cssW + 'px'; overlay.style.height = cssH + 'px';
-  $('page-wrap').style.width = cssW + 'px';
-}
-
-function strokePath(ctx, it) {
+function strokePath(ctx, it, W, H) {
   ctx.globalAlpha = it.mode === 'hl' ? .38 : 1;
   ctx.strokeStyle = it.color;
-  ctx.lineWidth = it.w * pageW * dpr();
+  ctx.lineWidth = it.w * W * dpr();
   ctx.lineCap = 'round'; ctx.lineJoin = 'round';
   ctx.beginPath();
   it.pts.forEach(([x, y], i) => {
-    const px = x * pageW * dpr(), py = y * pageH * dpr();
+    const px = x * W * dpr(), py = y * H * dpr();
     i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
   });
-  if (it.pts.length === 1) ctx.lineTo(it.pts[0][0] * pageW * dpr() + .1, it.pts[0][1] * pageH * dpr());
+  if (it.pts.length === 1) ctx.lineTo(it.pts[0][0] * W * dpr() + .1, it.pts[0][1] * H * dpr());
   ctx.stroke();
   ctx.globalAlpha = 1;
 }
-function drawAnnots() {
-  const ctx = $('annot-canvas').getContext('2d');
+function drawAnnots(n) {
+  const p = vPages[n];
+  if (!p || !p.overlay) return;
+  const ctx = p.overlay.getContext('2d');
   ctx.clearRect(0, 0, ctx.canvas.width, ctx.canvas.height);
-  for (const it of vItems) {
-    if (it.kind === 'stroke') strokePath(ctx, it);
+  for (const it of p.items || []) {
+    if (it.kind === 'stroke') strokePath(ctx, it, cssW, p.cssH);
     else if (it.kind === 'img') {
       let im = imgCache.get(it.b64);
       if (!im) {
         im = new Image();
-        im.onload = () => drawAnnots();
+        im.onload = () => drawAnnots(n);
         im.src = it.b64;
         imgCache.set(it.b64, im);
       }
       if (im.complete && im.naturalWidth) {
-        ctx.drawImage(im, it.x * pageW * dpr(), it.y * pageH * dpr(), it.w * pageW * dpr(), it.h * pageH * dpr());
+        ctx.drawImage(im, it.x * cssW * dpr(), it.y * p.cssH * dpr(), it.w * cssW * dpr(), it.h * p.cssH * dpr());
       }
     }
   }
 }
 
 let saveTimer;
-function saveAnnots() {
+function saveAnnots(n) {
   clearTimeout(saveTimer);
-  const key = vKey(vPage), items = vItems;
-  saveTimer = setTimeout(() => put('annots', { key, docId: vDoc.id, page: vPage, items }), 350);
+  const key = vKey(n), docId = vDoc.id, items = vPages[n].items;
+  saveTimer = setTimeout(() => put('annots', { key, docId, page: n, items }), 350);
 }
 
 /* ---- stylus-only mode (finger scrolls, pen edits) ---- */
@@ -655,26 +738,26 @@ $('tool-stylus').addEventListener('click', () => {
   stylusOnly = !stylusOnly;
   localStorage.setItem('mk-stylus', stylusOnly ? '1' : '0');
   updateStylusBtn();
-  setTool(vTool);
   toast(stylusOnly ? 'Stylus only: pen edits, finger scrolls' : 'Finger drawing enabled');
 });
 const isBlockedTouch = (e) => stylusOnly && e.pointerType === 'touch';
 function autoDetectStylus(e) {
-  if (e.pointerType === 'pen' && !stylusOnly && localStorage.getItem('mk-stylus') === null) {
+  if (e.pointerType === 'pen' && !stylusOnly && localStorage.getItem('mk-stylus') !== '0') {
     stylusOnly = true;
     localStorage.setItem('mk-stylus', '1');
     updateStylusBtn();
-    setTool(vTool);
     toast('Stylus detected: pen edits, finger scrolls');
   }
 }
+/* register the stylus the moment it touches or hovers anywhere in the app */
+document.addEventListener('pointerdown', autoDetectStylus, true);
+document.addEventListener('pointerover', autoDetectStylus, true);
 
 /* ---- tools ---- */
 function setTool(t) {
   vTool = t;
   document.querySelectorAll('.tool[data-tool]').forEach((b) => b.classList.toggle('active', b.dataset.tool === t));
-  $('annot-canvas').style.pointerEvents = t === 'pan' ? 'none' : 'auto';
-  $('annot-canvas').style.touchAction = (t === 'pan' || stylusOnly) ? 'auto' : 'none';
+  $('pages').classList.toggle('pan', t === 'pan');
   updateStylusBtn();
   const pal = $('palette');
   if (t === 'pen' || t === 'hl') {
@@ -694,46 +777,59 @@ document.querySelectorAll('.tool[data-tool]').forEach((b) =>
     setTool(b.dataset.tool);
   }));
 $('tool-undo').addEventListener('click', () => {
-  if (vItems.length) { vItems.pop(); drawAnnots(); saveAnnots(); }
+  const n = lastEditPage || vPage;
+  const p = vPages[n];
+  if (p && p.items && p.items.length) { p.items.pop(); drawAnnots(n); saveAnnots(n); }
 });
 
-/* ---- pointer drawing ---- */
-let curStroke = null, dragImg = null, dragMode = null, dragStart = null;
-const annotEl = () => $('annot-canvas');
-function normPos(e) {
-  const r = annotEl().getBoundingClientRect();
+/* ---- pointer drawing (delegated: each page has its own overlay canvas) ---- */
+let curStroke = null, strokePage = null, dragImg = null, dragMode = null, dragStart = null, touchPan = null;
+const overlayOf = (e) => (e.target.classList && e.target.classList.contains('annot-canvas')) ? e.target : null;
+function normPos(e, ov) {
+  const r = ov.getBoundingClientRect();
   return [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height];
 }
-function hitImage(nx, ny) {
-  for (let i = vItems.length - 1; i >= 0; i--) {
-    const it = vItems[i];
+function hitImage(items, nx, ny) {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i];
     if (it.kind !== 'img') continue;
     if (nx >= it.x && nx <= it.x + it.w && ny >= it.y && ny <= it.y + it.h) return it;
   }
   return null;
 }
-function eraseAt(nx, ny) {
+function eraseAt(n, nx, ny) {
+  const p = vPages[n];
+  if (!p || !p.items) return;
   const rPx = 16;
-  const before = vItems.length;
-  vItems = vItems.filter((it) => {
+  const before = p.items.length;
+  p.items = p.items.filter((it) => {
     if (it.kind === 'stroke') {
-      return !it.pts.some(([x, y]) => Math.hypot((x - nx) * pageW, (y - ny) * pageH) < rPx);
+      return !it.pts.some(([x, y]) => Math.hypot((x - nx) * cssW, (y - ny) * p.cssH) < rPx);
     }
     return !(nx >= it.x && nx <= it.x + it.w && ny >= it.y && ny <= it.y + it.h);
   });
-  if (vItems.length !== before) { drawAnnots(); saveAnnots(); }
+  if (p.items.length !== before) { drawAnnots(n); saveAnnots(n); }
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-  const el = annotEl();
-  el.addEventListener('pointerdown', (e) => {
-    if (vTool === 'pan') return;
-    autoDetectStylus(e);
-    if (isBlockedTouch(e)) return;   // finger only scrolls in stylus mode
+  const cont = $('pages');
+  cont.addEventListener('pointerdown', (e) => {
+    const ov = overlayOf(e);
+    if (!ov || vTool === 'pan') return;
     e.preventDefault();
-    el.setPointerCapture(e.pointerId);
-    const [nx, ny] = normPos(e);
+    try { ov.setPointerCapture(e.pointerId); } catch (err) { /* pointer already gone */ }
+    if (isBlockedTouch(e)) {
+      /* finger in stylus mode: scroll the pages manually */
+      touchPan = { y: e.clientY };
+      return;
+    }
+    const n = +ov.dataset.page;
+    const p = vPages[n];
+    if (!p || p.items === null) return;
+    lastEditPage = n;
+    const [nx, ny] = normPos(e, ov);
     if (vTool === 'pen' || vTool === 'hl') {
+      strokePage = n;
       curStroke = {
         kind: 'stroke', mode: vTool,
         color: vTool === 'pen' ? penColor : hlColor,
@@ -741,33 +837,44 @@ document.addEventListener('DOMContentLoaded', () => {
         pts: [[nx, ny]],
       };
     } else if (vTool === 'erase') {
-      eraseAt(nx, ny);
+      eraseAt(n, nx, ny);
     } else if (vTool === 'img') {
-      const it = hitImage(nx, ny);
+      const it = hitImage(p.items, nx, ny);
       if (it) {
-        const nearCorner = Math.hypot((nx - it.x - it.w) * pageW, (ny - it.y - it.h) * pageH) < 26;
+        const nearCorner = Math.hypot((nx - it.x - it.w) * cssW, (ny - it.y - it.h) * p.cssH) < 26;
         dragImg = it; dragMode = nearCorner ? 'resize' : 'move'; dragStart = [nx, ny, it.x, it.y, it.w, it.h];
       }
     }
   });
-  el.addEventListener('pointermove', (e) => {
-    if (vTool === 'pan' || isBlockedTouch(e)) return;
-    const [nx, ny] = normPos(e);
-    if (curStroke) {
+  cont.addEventListener('pointermove', (e) => {
+    if (vTool === 'pan') return;
+    if (touchPan) {
+      scroller().scrollTop -= e.clientY - touchPan.y;
+      touchPan.y = e.clientY;
+      return;
+    }
+    if (isBlockedTouch(e)) return;
+    const ov = overlayOf(e);
+    if (!ov) return;
+    const n = +ov.dataset.page;
+    const p = vPages[n];
+    if (!p) return;
+    const [nx, ny] = normPos(e, ov);
+    if (curStroke && n === strokePage) {
       const last = curStroke.pts[curStroke.pts.length - 1];
       curStroke.pts.push([nx, ny]);
-      const ctx = el.getContext('2d');
+      const ctx = ov.getContext('2d');
       ctx.globalAlpha = curStroke.mode === 'hl' ? .38 : 1;
       ctx.strokeStyle = curStroke.color;
-      ctx.lineWidth = curStroke.w * pageW * dpr();
+      ctx.lineWidth = curStroke.w * cssW * dpr();
       ctx.lineCap = 'round';
       ctx.beginPath();
-      ctx.moveTo(last[0] * pageW * dpr(), last[1] * pageH * dpr());
-      ctx.lineTo(nx * pageW * dpr(), ny * pageH * dpr());
+      ctx.moveTo(last[0] * cssW * dpr(), last[1] * p.cssH * dpr());
+      ctx.lineTo(nx * cssW * dpr(), ny * p.cssH * dpr());
       ctx.stroke();
       ctx.globalAlpha = 1;
     } else if (vTool === 'erase' && e.buttons) {
-      eraseAt(nx, ny);
+      eraseAt(n, nx, ny);
     } else if (dragImg) {
       const [sx, sy, ox, oy, ow, oh] = dragStart;
       if (dragMode === 'move') { dragImg.x = ox + nx - sx; dragImg.y = oy + ny - sy; }
@@ -775,19 +882,29 @@ document.addEventListener('DOMContentLoaded', () => {
         dragImg.w = Math.max(.05, ow + nx - sx);
         dragImg.h = Math.max(.05, oh + ny - sy);
       }
-      drawAnnots();
+      drawAnnots(n);
     }
   });
   const finish = () => {
-    if (curStroke) {
-      if (curStroke.pts.length > 1) { vItems.push(curStroke); saveAnnots(); }
-      curStroke = null;
-      drawAnnots();
+    if (curStroke && strokePage) {
+      const p = vPages[strokePage];
+      if (p && curStroke.pts.length > 1) { p.items.push(curStroke); saveAnnots(strokePage); }
+      drawAnnots(strokePage);
+      curStroke = null; strokePage = null;
     }
-    if (dragImg) { saveAnnots(); dragImg = null; dragMode = null; }
+    if (dragImg && lastEditPage) { saveAnnots(lastEditPage); dragImg = null; dragMode = null; }
+    touchPan = null;
   };
-  el.addEventListener('pointerup', finish);
-  el.addEventListener('pointercancel', finish);
+  cont.addEventListener('pointerup', finish);
+  cont.addEventListener('pointercancel', finish);
+
+  /* track which page is in view while scrolling */
+  let tick = false;
+  scroller().addEventListener('scroll', () => {
+    if (tick) return;
+    tick = true;
+    nextTick(() => { tick = false; updateCurrentPage(); ensurePages(); });
+  });
 });
 
 /* ---- image insert ---- */
@@ -799,13 +916,21 @@ $('img-input').addEventListener('change', async (e) => {
     const r = new FileReader(); r.onload = () => res(r.result); r.readAsDataURL(file);
   });
   const im = new Image();
-  im.onload = () => {
+  im.onload = async () => {
+    const n = vPage;
+    const p = vPages[n];
+    if (!p) return;
+    if (p.items === null) {
+      const rec = await get('annots', vKey(n));
+      p.items = rec ? rec.items : [];
+    }
     const w = .5;
-    const h = (im.naturalHeight / im.naturalWidth) * (w * pageW) / pageH;
-    vItems.push({ kind: 'img', b64, x: .25, y: .15, w, h });
+    const h = (im.naturalHeight / im.naturalWidth) * (w * cssW) / p.cssH;
+    p.items.push({ kind: 'img', b64, x: .25, y: .15, w, h });
     imgCache.set(b64, im);
-    drawAnnots();
-    saveAnnots();
+    lastEditPage = n;
+    drawAnnots(n);
+    saveAnnots(n);
     toast('Image added. Drag to move, drag its corner to resize');
   };
   im.src = b64;
@@ -814,13 +939,26 @@ $('img-input').addEventListener('change', async (e) => {
 /* ---- viewer chrome ---- */
 $('viewer-close').addEventListener('click', () => {
   $('viewer').classList.add('hidden');
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  vSeq++;
+  $('pages').innerHTML = '';
+  vPages = [];
+  lastEditPage = null;
   if (vDoc && vDoc.pdf) vDoc.pdf.destroy();
   if (vUrl) { URL.revokeObjectURL(vUrl); vUrl = null; }
-  vDoc = null; vItems = [];
+  vDoc = null;
 });
-$('viewer-prev').addEventListener('click', () => renderViewerPage(vPage - 1));
-$('viewer-next').addEventListener('click', () => renderViewerPage(vPage + 1));
-$('viewer-page').addEventListener('change', () => renderViewerPage(+$('viewer-page').value));
+$('viewer-prev').addEventListener('click', () => scrollToPage(vPage - 1));
+$('viewer-next').addEventListener('click', () => scrollToPage(vPage + 1));
+$('viewer-page').addEventListener('change', () => scrollToPage(+$('viewer-page').value, true));
+$('viewer-fs').addEventListener('click', () => {
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  else if ($('viewer').requestFullscreen) $('viewer').requestFullscreen().catch(() => toast('Full screen not available here'));
+  else toast('Full screen not available here');
+});
+document.addEventListener('fullscreenchange', () => {
+  $('viewer-fs').classList.toggle('active', !!document.fullscreenElement);
+});
 $('nb-addpage').addEventListener('click', async () => {
   if (!vDoc || vDoc.type !== 'nb') return;
   vDoc.nb.pageCount++;
@@ -828,7 +966,8 @@ $('nb-addpage').addEventListener('click', async () => {
   await put('notebooks', vDoc.nb);
   $('viewer-total').textContent = '/ ' + vDoc.pageCount;
   $('viewer-page').max = vDoc.pageCount;
-  renderViewerPage(vDoc.pageCount);
+  addPageShell(vDoc.pageCount, cssW * 1.414);
+  nextTick(() => { scrollToPage(vDoc.pageCount); ensurePages(); });
   renderNotebooks();
 });
 
