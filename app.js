@@ -956,13 +956,39 @@ $('import-input').addEventListener('change', async (e) => {
   }
 });
 
+/* ---------- PDFs shared in from other apps (Web Share Target) ---------- */
+async function drainSharedPdfs() {
+  try {
+    const sdb = await new Promise((res, rej) => {
+      const r = indexedDB.open('mk-share', 1);
+      r.onupgradeneeded = () => r.result.createObjectStore('files', { autoIncrement: true });
+      r.onsuccess = () => res(r.result);
+      r.onerror = () => rej(r.error);
+    });
+    const files = await new Promise((res, rej) => {
+      const tx = sdb.transaction('files', 'readwrite');
+      const req = tx.objectStore('files').getAll();
+      req.onsuccess = () => { tx.objectStore('files').clear(); res(req.result || []); };
+      tx.onerror = () => rej(tx.error);
+    });
+    if (!files.length) return;
+    document.querySelector('.tab[data-view="library"]').click();
+    for (const f of files) await ingestPdf(f);
+    renderLibrary();
+    if (location.search.includes('shared=1'))
+      history.replaceState(null, '', location.pathname);
+  } catch (err) { /* share inbox unavailable on this browser; normal upload still works */ }
+}
+
 /* ============ boot ============ */
 (async () => {
   db = await openDB();
   if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
   renderNotes();
   renderLibrary();
   renderBooks();
   renderAqwal();
   renderNotebooks();
+  drainSharedPdfs();
 })();
