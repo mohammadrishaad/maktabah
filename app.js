@@ -12,7 +12,7 @@ const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
 let db;
 function openDB() {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open('maktabah', 2);
+    const req = indexedDB.open('maktabah', 3);
     req.onupgradeneeded = (e) => {
       const d = req.result;
       if (e.oldVersion < 1) {
@@ -25,6 +25,9 @@ function openDB() {
       if (e.oldVersion < 2) {
         d.createObjectStore('annots', { keyPath: 'key' });    // {key:"type:docId:page", docId, page, items:[]}
         d.createObjectStore('notebooks', { keyPath: 'id' });  // {id,title,template,bg,pageCount,addedAt}
+      }
+      if (e.oldVersion < 3) {
+        d.createObjectStore('folders', { keyPath: 'id' });    // {id,name,createdAt}
       }
     };
     req.onsuccess = () => resolve(req.result);
@@ -420,8 +423,95 @@ $('book-form').addEventListener('submit', async (e) => {
   renderBooks();
 });
 
+/* ---------- folders (Samsung-Notes style) ---------- */
+let bkFolder = null, bkTag = null;
+
+function openFolderSheet(bookId) {
+  return new Promise(async (resolve) => {
+    const folders = (await getAll('folders')).sort((a, b) => a.name.localeCompare(b.name));
+    const chips = $('foldersheet-chips');
+    const close = () => {
+      $('foldersheet').classList.add('hidden');
+      $('folder-create').onclick = $('foldersheet-cancel').onclick = null;
+    };
+    if (bookId) {
+      const book = await get('books', bookId);
+      $('foldersheet-title').textContent = 'Move to folder';
+      chips.innerHTML = `<button class="pill ${!book.folderId ? 'active' : ''}" data-fc="">No folder</button>` +
+        folders.map((f) => `<button class="pill ${book.folderId === f.id ? 'active' : ''}" data-fc="${f.id}">${esc(f.name)}</button>`).join('');
+      chips.querySelectorAll('[data-fc]').forEach((c) =>
+        c.addEventListener('click', async () => {
+          book.folderId = c.dataset.fc || null;
+          await put('books', book);
+          close(); resolve();
+        }));
+    } else {
+      $('foldersheet-title').textContent = 'New folder';
+      chips.innerHTML = '';
+    }
+    $('folder-new').value = '';
+    $('foldersheet').classList.remove('hidden');
+    $('folder-create').onclick = async () => {
+      const name = $('folder-new').value.trim();
+      if (!name) return;
+      const id = uid();
+      await put('folders', { id, name, createdAt: Date.now() });
+      if (bookId) {
+        const book = await get('books', bookId);
+        book.folderId = id;
+        await put('books', book);
+      }
+      close(); resolve();
+    };
+    $('foldersheet-cancel').onclick = () => { close(); resolve(); };
+  });
+}
+
 async function renderBooks() {
-  const books = (await getAll('books')).filter((b) => b.status);
+  const folders = (await getAll('folders')).sort((a, b) => a.name.localeCompare(b.name));
+  const folderName = (id) => { const f = folders.find((x) => x.id === id); return f ? f.name : null; };
+  if (bkFolder && !folderName(bkFolder)) bkFolder = null;
+  const allStatus = (await getAll('books')).filter((b) => b.status);
+
+  /* folder bar */
+  const fb = $('bk-folders');
+  fb.innerHTML =
+    `<button class="pill ${!bkFolder ? 'active' : ''}" data-f="">All</button>` +
+    folders.map((f) => `<button class="pill ${bkFolder === f.id ? 'active' : ''}" data-f="${f.id}">${esc(f.name)}</button>`).join('') +
+    `<button class="pill" data-newfolder>+ Folder</button>` +
+    (bkFolder ? `<button class="pill pill-danger" data-delfolder>Delete folder</button>` : '');
+  fb.querySelectorAll('[data-f]').forEach((p) =>
+    p.addEventListener('click', () => { bkFolder = p.dataset.f || null; renderBooks(); }));
+  fb.querySelector('[data-newfolder]').addEventListener('click', async () => {
+    await openFolderSheet(null); renderBooks();
+  });
+  const delF = fb.querySelector('[data-delfolder]');
+  if (delF) delF.addEventListener('click', async () => {
+    const name = folderName(bkFolder);
+    if (!await appConfirm(`Delete folder "${name}"? The books in it stay in your lists.`, 'Delete')) return;
+    for (const b of allStatus.filter((x) => x.folderId === bkFolder)) {
+      b.folderId = null; await put('books', b);
+    }
+    await del('folders', bkFolder);
+    bkFolder = null;
+    renderBooks();
+  });
+
+  let books = bkFolder ? allStatus.filter((b) => b.folderId === bkFolder) : allStatus;
+
+  /* tag filter bar */
+  const inUse = [...new Set(books.flatMap((b) => b.tags || []))];
+  if (bkTag && !inUse.includes(bkTag)) bkTag = null;
+  const tb = $('bk-tagfilter');
+  tb.classList.toggle('hidden', !inUse.length);
+  tb.innerHTML = inUse.length
+    ? ['All', ...inUse].map((t) =>
+        `<button class="pill ${(t === 'All' ? !bkTag : bkTag === t) ? 'active' : ''}" data-bt="${esc(t)}">${esc(t)}</button>`).join('')
+    : '';
+  tb.querySelectorAll('[data-bt]').forEach((p) =>
+    p.addEventListener('click', () => { bkTag = p.dataset.bt === 'All' ? null : p.dataset.bt; renderBooks(); }));
+  if (bkTag) books = books.filter((b) => (b.tags || []).includes(bkTag));
+
   for (const status of ['ongoing', 'completed', 'future']) {
     const list = books.filter((b) => b.status === status).sort((a, b) => b.addedAt - a.addedAt);
     const other = { ongoing: ['completed', 'future'], completed: ['ongoing', 'future'], future: ['ongoing', 'completed'] }[status];
@@ -430,10 +520,16 @@ async function renderBooks() {
       <li class="card">
         <div class="c-title">${esc(b.title)}</div>
         ${b.author ? `<div class="c-sub">${esc(b.author)}</div>` : ''}
+        ${(b.tags || []).length || b.folderId ? `<div class="c-tags">
+          ${b.folderId && folderName(b.folderId) ? `<span class="badge badge-folder">${esc(folderName(b.folderId))}</span>` : ''}
+          ${(b.tags || []).map((t) => `<span class="badge">${esc(t)}</span>`).join('')}
+        </div>` : ''}
         <div class="c-actions">
           ${b.hasPdf ? `<button class="mini gold" data-open="${b.id}">Open PDF</button>` : ''}
           <button class="mini" data-move="${b.id}" data-to="${other[0]}">&rarr; ${label[other[0]]}</button>
           <button class="mini" data-move="${b.id}" data-to="${other[1]}">&rarr; ${label[other[1]]}</button>
+          <button class="mini" data-btags="${b.id}">Tags</button>
+          <button class="mini" data-bfolder="${b.id}">Folder</button>
           <button class="mini danger" data-delbook="${b.id}">Remove</button>
         </div>
       </li>`).join('') : '<li class="c-sub" style="padding:4px 2px 10px;color:var(--muted)">Empty</li>';
@@ -448,6 +544,10 @@ async function renderBooks() {
     }));
   view.querySelectorAll('[data-open]').forEach((btn) =>
     btn.addEventListener('click', () => openViewer(btn.dataset.open, 1)));
+  view.querySelectorAll('[data-btags]').forEach((btn) =>
+    btn.addEventListener('click', async () => { await openTagSheet(btn.dataset.btags); renderBooks(); renderLibrary(); }));
+  view.querySelectorAll('[data-bfolder]').forEach((btn) =>
+    btn.addEventListener('click', async () => { await openFolderSheet(btn.dataset.bfolder); renderBooks(); }));
   view.querySelectorAll('[data-delbook]').forEach((btn) =>
     btn.addEventListener('click', async () => {
       const b = await get('books', btn.dataset.delbook);
@@ -783,8 +883,10 @@ $('tool-undo').addEventListener('click', () => {
 });
 
 /* ---- pointer drawing (delegated: each page has its own overlay canvas) ---- */
-let curStroke = null, strokePage = null, dragImg = null, dragMode = null, dragStart = null, touchPan = null;
+let curStroke = null, strokePage = null, dragImg = null, dragMode = null, dragStart = null, touchPan = null, gTool = null;
 const overlayOf = (e) => (e.target.classList && e.target.classList.contains('annot-canvas')) ? e.target : null;
+/* S Pen side button (buttons bit 2) or eraser end (bit 32) = erase for this gesture */
+const penEraseChord = (e) => e.pointerType === 'pen' && !!(e.buttons & 34);
 function normPos(e, ov) {
   const r = ov.getBoundingClientRect();
   return [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height];
@@ -813,9 +915,16 @@ function eraseAt(n, nx, ny) {
 
 document.addEventListener('DOMContentLoaded', () => {
   const cont = $('pages');
-  cont.addEventListener('pointerdown', (e) => {
-    const ov = overlayOf(e);
-    if (!ov || vTool === 'pan') return;
+  cont.addEventListener('contextmenu', (e) => e.preventDefault());
+  cont.addEventListener('pointerdown', async (e) => {
+    const chord = penEraseChord(e);
+    let ov = overlayOf(e);
+    if (!ov && chord) {
+      /* in Scroll mode overlays don't take events; find the page under the pen */
+      const wrap = e.target.closest && e.target.closest('.page-wrap');
+      ov = wrap && wrap.querySelector('.annot-canvas');
+    }
+    if (!ov || (vTool === 'pan' && !chord)) return;
     e.preventDefault();
     try { ov.setPointerCapture(e.pointerId); } catch (err) { /* pointer already gone */ }
     if (isBlockedTouch(e)) {
@@ -825,20 +934,25 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     const n = +ov.dataset.page;
     const p = vPages[n];
-    if (!p || p.items === null) return;
+    if (!p) return;
+    if (p.items === null) {
+      const rec = await get('annots', vKey(n));
+      p.items = rec ? rec.items : [];
+    }
     lastEditPage = n;
+    gTool = chord ? 'erase' : vTool;
     const [nx, ny] = normPos(e, ov);
-    if (vTool === 'pen' || vTool === 'hl') {
+    if (gTool === 'pen' || gTool === 'hl') {
       strokePage = n;
       curStroke = {
-        kind: 'stroke', mode: vTool,
-        color: vTool === 'pen' ? penColor : hlColor,
-        w: vTool === 'pen' ? .005 : .024,
+        kind: 'stroke', mode: gTool,
+        color: gTool === 'pen' ? penColor : hlColor,
+        w: gTool === 'pen' ? .005 : .024,
         pts: [[nx, ny]],
       };
-    } else if (vTool === 'erase') {
+    } else if (gTool === 'erase') {
       eraseAt(n, nx, ny);
-    } else if (vTool === 'img') {
+    } else if (gTool === 'img') {
       const it = hitImage(p.items, nx, ny);
       if (it) {
         const nearCorner = Math.hypot((nx - it.x - it.w) * cssW, (ny - it.y - it.h) * p.cssH) < 26;
@@ -847,7 +961,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
   cont.addEventListener('pointermove', (e) => {
-    if (vTool === 'pan') return;
+    if (vTool === 'pan' && gTool !== 'erase') return;
     if (touchPan) {
       scroller().scrollTop -= e.clientY - touchPan.y;
       touchPan.y = e.clientY;
@@ -873,7 +987,7 @@ document.addEventListener('DOMContentLoaded', () => {
       ctx.lineTo(nx * cssW * dpr(), ny * p.cssH * dpr());
       ctx.stroke();
       ctx.globalAlpha = 1;
-    } else if (vTool === 'erase' && e.buttons) {
+    } else if (gTool === 'erase' && e.buttons) {
       eraseAt(n, nx, ny);
     } else if (dragImg) {
       const [sx, sy, ox, oy, ow, oh] = dragStart;
@@ -894,6 +1008,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     if (dragImg && lastEditPage) { saveAnnots(lastEditPage); dragImg = null; dragMode = null; }
     touchPan = null;
+    gTool = null;
   };
   cont.addEventListener('pointerup', finish);
   cont.addEventListener('pointercancel', finish);
@@ -1044,16 +1159,16 @@ const backupStatus = (msg) => { $('backup-status').textContent = msg; };
 $('btn-export').addEventListener('click', async () => {
   try {
     backupStatus('Preparing backup...');
-    const [books, texts, notes, aqwal, blobs, annots, notebooks] = await Promise.all([
+    const [books, texts, notes, aqwal, blobs, annots, notebooks, folders] = await Promise.all([
       getAll('books'), getAll('pdfText'), getAll('notes'), getAll('aqwal'), getAll('pdfBlob'),
-      getAll('annots'), getAll('notebooks'),
+      getAll('annots'), getAll('notebooks'), getAll('folders'),
     ]);
     const pdfs = [];
     for (let i = 0; i < blobs.length; i++) {
       backupStatus(`Packing PDF ${i + 1} / ${blobs.length}...`);
       pdfs.push({ bookId: blobs[i].bookId, b64: await blobToB64(blobs[i].blob) });
     }
-    const payload = JSON.stringify({ app: 'maktabah', version: 2, exportedAt: new Date().toISOString(), books, texts, notes, aqwal, pdfs, annots, notebooks });
+    const payload = JSON.stringify({ app: 'maktabah', version: 3, exportedAt: new Date().toISOString(), books, texts, notes, aqwal, pdfs, annots, notebooks, folders });
     const url = URL.createObjectURL(new Blob([payload], { type: 'application/json' }));
     const a = document.createElement('a');
     a.href = url;
@@ -1083,6 +1198,7 @@ $('import-input').addEventListener('change', async (e) => {
     for (const a of data.aqwal || []) await put('aqwal', a);
     for (const an of data.annots || []) await put('annots', an);
     for (const nb of data.notebooks || []) await put('notebooks', nb);
+    for (const f of data.folders || []) await put('folders', f);
     const pdfs = data.pdfs || [];
     for (let i = 0; i < pdfs.length; i++) {
       backupStatus(`Restoring PDF ${i + 1} / ${pdfs.length}...`);

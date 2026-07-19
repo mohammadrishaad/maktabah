@@ -81,6 +81,8 @@
 
 <!-- ============ BOOKS (statuses) ============ -->
 <main id="view-books" class="view">
+  <div id="bk-folders" class="tag-scroll"></div>
+  <div id="bk-tagfilter" class="tag-scroll hidden"></div>
   <form id="book-form" class="stack">
     <input id="book-title" class="input" type="text" placeholder="Book title" required>
     <input id="book-author" class="input" type="text" placeholder="Author / Shaykh (optional)">
@@ -188,6 +190,21 @@
     <div class="dialog-actions">
       <button id="nb-cancel" class="btn">Cancel</button>
       <button id="nb-create" class="btn gold">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ FOLDER SHEET ============ -->
+<div id="foldersheet" class="dialog-overlay hidden" role="dialog" aria-modal="true">
+  <div class="dialog">
+    <p class="sheet-title" id="foldersheet-title">Move to folder</p>
+    <div id="foldersheet-chips" class="chip-wrap"></div>
+    <div class="row" style="margin-bottom:14px">
+      <input id="folder-new" class="input" type="text" placeholder="New folder name">
+      <button id="folder-create" class="btn gold">Create</button>
+    </div>
+    <div class="dialog-actions">
+      <button id="foldersheet-cancel" class="btn">Cancel</button>
     </div>
   </div>
 </div>

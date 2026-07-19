@@ -273,6 +273,8 @@ section:first-of-type .section-h { margin-top: 18px; }
 .tag-scroll::-webkit-scrollbar { display: none; }
 .tag-scroll .pill { flex-shrink: 0; }
 .c-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 7px; }
+.pill-danger { border-color: rgba(224, 133, 133, .45); color: var(--danger); }
+.badge-folder { border-color: rgba(201, 162, 39, .5); color: var(--gold-soft); background: var(--gold-dim); }
 .sheet-title { font-size: 1.02rem; font-weight: 650; margin-bottom: 12px; }
 .chip-wrap { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 14px; max-height: 40vh; overflow-y: auto; }
 
