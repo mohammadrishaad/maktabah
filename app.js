@@ -668,7 +668,7 @@ async function showViewer(page) {
   $('viewer-total').textContent = '/ ' + vDoc.pageCount;
   $('viewer-page').max = vDoc.pageCount;
   $('nb-addpage').classList.toggle('hidden', vDoc.type !== 'nb');
-  setTool('pan');
+  setTool(stylusOnly ? 'pen' : 'pan');
   $('viewer').classList.remove('hidden');
   cssW = Math.min($('viewer').clientWidth - 20, 700);
   let ratio = 1.414;
@@ -852,6 +852,7 @@ $('tool-stylus').addEventListener('click', () => {
   stylusOnly = !stylusOnly;
   localStorage.setItem('mk-stylus', stylusOnly ? '1' : '0');
   updateStylusBtn();
+  setTool(stylusOnly && vTool === 'pan' ? 'pen' : vTool);
   toast(stylusOnly ? 'Stylus only: pen edits, finger scrolls' : 'Finger drawing enabled');
 });
 const isBlockedTouch = (e) => stylusOnly && e.pointerType === 'touch';
@@ -860,6 +861,7 @@ function autoDetectStylus(e) {
     stylusOnly = true;
     localStorage.setItem('mk-stylus', '1');
     updateStylusBtn();
+    setTool(vTool === 'pan' ? 'pen' : vTool);
     toast('Stylus detected: pen edits, finger scrolls');
   }
 }
@@ -869,8 +871,11 @@ document.addEventListener('pointerover', autoDetectStylus, true);
 
 /* ---- tools ---- */
 function setTool(t) {
+  /* in stylus mode the Scroll tool is pointless: finger always scrolls, pen edits */
+  if (stylusOnly && t === 'pan') t = 'pen';
   vTool = t;
   document.querySelectorAll('.tool[data-tool]').forEach((b) => b.classList.toggle('active', b.dataset.tool === t));
+  document.querySelector('.tool[data-tool="pan"]').classList.toggle('hidden', stylusOnly);
   $('pages').classList.toggle('pan', t === 'pan');
   updateStylusBtn();
   const pal = $('palette');
@@ -898,6 +903,24 @@ $('tool-undo').addEventListener('click', () => {
 
 /* ---- pointer drawing (delegated: each page has its own overlay canvas) ---- */
 let curStroke = null, strokePage = null, dragImg = null, dragMode = null, dragStart = null, touchPan = null, gTool = null;
+
+/* momentum fling for manual finger scrolling in stylus mode */
+let flingTimer = 0;
+function stopFling() { clearTimeout(flingTimer); flingTimer = 0; }
+function startFling(v) {
+  stopFling();
+  if (Math.abs(v) < 0.08) return;
+  let last = performance.now();
+  const step = () => {
+    const t = performance.now();
+    const dt = Math.min(t - last, 50);
+    last = t;
+    scroller().scrollTop -= v * dt;
+    v *= Math.pow(0.94, dt / 16);
+    if (Math.abs(v) > 0.04) flingTimer = setTimeout(step, 16);
+  };
+  flingTimer = setTimeout(step, 16);
+}
 const overlayOf = (e) => (e.target.classList && e.target.classList.contains('annot-canvas')) ? e.target : null;
 /* S Pen side button (buttons bit 2) or eraser end (bit 32) = erase for this gesture */
 const penEraseChord = (e) => e.pointerType === 'pen' && !!(e.buttons & 34);
@@ -943,7 +966,8 @@ document.addEventListener('DOMContentLoaded', () => {
     try { ov.setPointerCapture(e.pointerId); } catch (err) { /* pointer already gone */ }
     if (isBlockedTouch(e)) {
       /* finger in stylus mode: scroll the pages manually */
-      touchPan = { y: e.clientY };
+      stopFling();
+      touchPan = { y: e.clientY, samples: [[performance.now(), e.clientY]] };
       return;
     }
     const n = +ov.dataset.page;
@@ -979,6 +1003,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (touchPan) {
       scroller().scrollTop -= e.clientY - touchPan.y;
       touchPan.y = e.clientY;
+      touchPan.samples.push([performance.now(), e.clientY]);
+      if (touchPan.samples.length > 6) touchPan.samples.shift();
       return;
     }
     if (isBlockedTouch(e)) return;
@@ -988,6 +1014,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const p = vPages[n];
     if (!p) return;
     const [nx, ny] = normPos(e, ov);
+    /* S Pen side button pressed mid-gesture: abandon the stroke, erase instead */
+    if (curStroke && penEraseChord(e)) {
+      curStroke = null; strokePage = null; gTool = 'erase';
+      drawAnnots(n);
+    }
     if (curStroke && n === strokePage) {
       const last = curStroke.pts[curStroke.pts.length - 1];
       curStroke.pts.push([nx, ny]);
@@ -1021,6 +1052,11 @@ document.addEventListener('DOMContentLoaded', () => {
       curStroke = null; strokePage = null;
     }
     if (dragImg && lastEditPage) { saveAnnots(lastEditPage); dragImg = null; dragMode = null; }
+    if (touchPan && touchPan.samples.length > 1) {
+      const s = touchPan.samples;
+      const [t0, y0] = s[0], [t1, y1] = s[s.length - 1];
+      if (t1 > t0) startFling((y1 - y0) / (t1 - t0));
+    }
     touchPan = null;
     gTool = null;
   };
@@ -1067,6 +1103,7 @@ $('img-input').addEventListener('change', async (e) => {
 
 /* ---- viewer chrome ---- */
 $('viewer-close').addEventListener('click', () => {
+  stopFling();
   $('viewer').classList.add('hidden');
   if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
   vSeq++;
