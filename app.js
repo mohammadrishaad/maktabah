@@ -30,7 +30,21 @@ function openDB() {
         d.createObjectStore('folders', { keyPath: 'id' });    // {id,name,createdAt}
       }
     };
-    req.onsuccess = () => resolve(req.result);
+    /* another open copy of the app (old tab / installed app) is holding the DB
+       at an older version, so the upgrade cannot run and nothing can load */
+    req.onblocked = () => {
+      const t = $('toast');
+      if (t) {
+        t.textContent = 'Update waiting: close ALL other Maktabah tabs and the installed app, then reopen. Your data is safe.';
+        t.classList.add('show');
+      }
+    };
+    req.onsuccess = () => {
+      const d = req.result;
+      /* if another tab upgrades the DB later, release it and reload */
+      d.onversionchange = () => { d.close(); location.reload(); };
+      resolve(d);
+    };
     req.onerror = () => reject(req.error);
   });
 }
